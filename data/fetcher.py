@@ -7,9 +7,9 @@ import config
 def fetch_ohlcv(
     symbol: str,
     timeframe: str = config.DEFAULT_TIMEFRAME,
-    period: str = config.DEFAULT_PERIOD,
 ) -> pd.DataFrame:
     """Fetch OHLCV data from yfinance and return with ATR column."""
+    period = config.TIMEFRAME_PERIODS.get(timeframe, "20d")
     ticker = yf.Ticker(symbol)
     df = ticker.history(period=period, interval=timeframe)
     df.index = pd.to_datetime(df.index)

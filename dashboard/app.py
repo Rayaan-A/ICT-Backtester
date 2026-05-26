@@ -16,7 +16,7 @@ from backtest.engine import Backtester, Trade
 from backtest.metrics import calculate_metrics
 from data.fetcher import fetch_ohlcv
 from signals.fvg import FVG, detect_fvgs
-from signals.liquidity import detect_sweeps
+from signals.liquidity import LiquiditySweep, detect_sweeps
 from signals.order_blocks import OrderBlock, detect_order_blocks
 
 app = dash.Dash(__name__, title="ICT Backtester")
@@ -76,13 +76,14 @@ def update(n_clicks: int, symbol: str, timeframe: str):
     df = fetch_ohlcv(symbol, timeframe)
     fvgs = detect_fvgs(df)
     obs = detect_order_blocks(df)
+    sweeps = detect_sweeps(df)
 
     backtester = Backtester(df)
     trades = backtester.run()
     metrics = calculate_metrics(trades, backtester.equity_curve)
 
     return (
-        _main_chart(df, fvgs, obs, trades),
+        _main_chart(df, fvgs, obs, sweeps, trades),
         _equity_chart(backtester.equity_curve),
         _metrics_panel(metrics),
     )
@@ -97,9 +98,10 @@ def _main_chart(
     df: pd.DataFrame,
     fvgs: List[FVG],
     obs: List[OrderBlock],
+    sweeps: List[LiquiditySweep],
     trades: List[Trade],
 ) -> go.Figure:
-    """Candlestick + volume chart with FVG and OB overlays."""
+    """Candlestick + volume chart with FVG/OB overlays and liquidity sweep lines."""
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         row_heights=[0.75, 0.25], vertical_spacing=0.02,
@@ -124,31 +126,52 @@ def _main_chart(
         row=2, col=1,
     )
 
-    # FVG rectangles
+    # Unmitigated FVG rectangles only — extend to right edge
     for fvg in fvgs:
-        if fvg.index >= len(df):
+        if fvg.filled or fvg.index >= len(df):
             continue
-        x0 = df.index[fvg.index]
-        x1 = df.index[fvg.fill_index] if fvg.filled and fvg.fill_index else df.index[-1]
         bull = fvg.direction == "bullish"
         fig.add_shape(
-            type="rect", x0=x0, x1=x1, y0=fvg.bottom, y1=fvg.top,
-            fillcolor="rgba(38,166,154,0.15)" if bull else "rgba(239,83,80,0.15)",
+            type="rect",
+            x0=df.index[fvg.index],
+            x1=df.index[-1],
+            y0=fvg.bottom,
+            y1=fvg.top,
+            fillcolor="rgba(38,166,154,0.18)" if bull else "rgba(239,83,80,0.18)",
             line=dict(color="#26a69a" if bull else "#ef5350", width=1),
             row=1, col=1,
         )
 
-    # OB rectangles
+    # Unmitigated OB rectangles only — extend to right edge
     for ob in obs:
-        if ob.index >= len(df) or ob.displaced_by_index >= len(df):
+        if ob.mitigated or ob.index >= len(df):
             continue
-        x0 = df.index[ob.index]
-        x1 = df.index[ob.displaced_by_index]
         bull = ob.direction == "bullish"
         fig.add_shape(
-            type="rect", x0=x0, x1=x1, y0=ob.bottom, y1=ob.top,
+            type="rect",
+            x0=df.index[ob.index],
+            x1=df.index[-1],
+            y0=ob.bottom,
+            y1=ob.top,
             fillcolor="rgba(255,214,0,0.10)" if bull else "rgba(255,87,34,0.10)",
             line=dict(color="#FFD600" if bull else "#FF5722", width=1, dash="dot"),
+            row=1, col=1,
+        )
+
+    # Liquidity sweep lines — short horizontal line at the swept level
+    for sweep in sweeps:
+        if sweep.index >= len(df):
+            continue
+        i0 = max(0, sweep.index - 2)
+        i1 = min(len(df) - 1, sweep.index + 6)
+        color = "#FF6B6B" if sweep.direction == "high" else "#4FC3F7"
+        fig.add_shape(
+            type="line",
+            x0=df.index[i0],
+            x1=df.index[i1],
+            y0=sweep.sweep_level,
+            y1=sweep.sweep_level,
+            line=dict(color=color, width=1, dash="dash"),
             row=1, col=1,
         )
 

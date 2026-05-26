@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-SYMBOLS: List[str] = ["EURUSD=X", "GBPUSD=X", "NQ=F"]
+SYMBOLS: List[str] = ["NQ=F", "ES=F"]
 
 TIMEFRAMES: Dict[str, str] = {
     "1h": "1h",
@@ -8,9 +8,15 @@ TIMEFRAMES: Dict[str, str] = {
     "1d": "1d",
 }
 
-DEFAULT_SYMBOL: str = "EURUSD=X"
+# Data lookback per timeframe
+TIMEFRAME_PERIODS: Dict[str, str] = {
+    "1h": "20d",
+    "4h": "60d",
+    "1d": "180d",
+}
+
+DEFAULT_SYMBOL: str = "NQ=F"
 DEFAULT_TIMEFRAME: str = "1h"
-DEFAULT_PERIOD: str = "60d"
 
 # ICT parameters
 OB_DISPLACEMENT_ATR: float = 1.5

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -17,6 +17,7 @@ class OrderBlock:
     bottom: float
     displaced_by_index: int  # index of the displacement candle
     mitigated: bool = False
+    mitigation_index: Optional[int] = None
 
 
 def detect_order_blocks(df: pd.DataFrame) -> List[OrderBlock]:
@@ -70,13 +71,15 @@ def detect_order_blocks(df: pd.DataFrame) -> List[OrderBlock]:
 
 
 def _mark_mitigated(df: pd.DataFrame, obs: List[OrderBlock]) -> None:
-    """Mutate OBs in-place, marking mitigated when price trades back into the zone."""
+    """Mutate OBs in-place: bullish mitigated on close below its low, bearish on close above its high."""
     for ob in obs:
         start = ob.displaced_by_index + 1
         for i in range(start, len(df)):
-            if ob.direction == "bullish" and df["low"].iloc[i] <= ob.top:
+            if ob.direction == "bullish" and df["close"].iloc[i] < ob.bottom:
                 ob.mitigated = True
+                ob.mitigation_index = i
                 break
-            if ob.direction == "bearish" and df["high"].iloc[i] >= ob.bottom:
+            if ob.direction == "bearish" and df["close"].iloc[i] > ob.top:
                 ob.mitigated = True
+                ob.mitigation_index = i
                 break

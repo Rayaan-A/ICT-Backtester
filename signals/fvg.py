@@ -58,14 +58,14 @@ def detect_fvgs(df: pd.DataFrame) -> List[FVG]:
 
 
 def _mark_filled(df: pd.DataFrame, fvgs: List[FVG]) -> None:
-    """Mutate FVGs in-place, marking fill_index when price trades through the gap."""
+    """Mutate FVGs in-place: bullish filled on close below bottom, bearish on close above top."""
     for fvg in fvgs:
         for i in range(fvg.index + 2, len(df)):
-            if fvg.direction == "bullish" and df["low"].iloc[i] <= fvg.bottom:
+            if fvg.direction == "bullish" and df["close"].iloc[i] < fvg.bottom:
                 fvg.filled = True
                 fvg.fill_index = i
                 break
-            if fvg.direction == "bearish" and df["high"].iloc[i] >= fvg.top:
+            if fvg.direction == "bearish" and df["close"].iloc[i] > fvg.top:
                 fvg.filled = True
                 fvg.fill_index = i
                 break
