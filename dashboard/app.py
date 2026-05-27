@@ -83,7 +83,7 @@ def update(n_clicks: int, symbol: str, timeframe: str):
     metrics = calculate_metrics(trades, backtester.equity_curve)
 
     return (
-        _main_chart(df, fvgs, obs, sweeps, trades),
+        _main_chart(df, fvgs, obs, sweeps, trades, timeframe),
         _equity_chart(backtester.equity_curve),
         _metrics_panel(metrics),
     )
@@ -94,12 +94,23 @@ def update(n_clicks: int, symbol: str, timeframe: str):
 # ------------------------------------------------------------------
 
 
+def _x_ticks(df: pd.DataFrame, timeframe: str) -> tuple:
+    """Return (tickvals, ticktext) sampling candles at a timeframe-appropriate interval."""
+    step = {"1h": 8, "4h": 2, "1d": 5}.get(timeframe, 8)
+    indices = range(0, len(df), step)
+    fmt = "%b %d" if timeframe == "1d" else "%b %d %H:%M"
+    tickvals = [df.index[i] for i in indices]
+    ticktext = [df.index[i].strftime(fmt) for i in indices]
+    return tickvals, ticktext
+
+
 def _main_chart(
     df: pd.DataFrame,
     fvgs: List[FVG],
     obs: List[OrderBlock],
     sweeps: List[LiquiditySweep],
     trades: List[Trade],
+    timeframe: str = "1h",
 ) -> go.Figure:
     """Candlestick + volume chart with FVG/OB overlays and liquidity sweep lines."""
     fig = make_subplots(
@@ -175,6 +186,7 @@ def _main_chart(
             row=1, col=1,
         )
 
+    tickvals, ticktext = _x_ticks(df, timeframe)
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#1a1a2e",
@@ -182,6 +194,12 @@ def _main_chart(
         xaxis_rangeslider_visible=False,
         showlegend=False,
         margin=dict(l=50, r=20, t=20, b=10),
+        xaxis=dict(
+            type="category",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            tickangle=-45,
+        ),
     )
     return fig
 
