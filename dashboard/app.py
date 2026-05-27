@@ -1,25 +1,30 @@
+import calendar
 import os
 import sys
+from typing import List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from typing import List
-
 import dash
 import plotly.graph_objects as go
-from dash import Input, Output, dcc, html
-from plotly.subplots import make_subplots
+from dash import ClientsideFunction, Input, Output, dcc, html
 import pandas as pd
 
 import config
-from backtest.engine import Backtester, Trade
+from backtest.engine import Backtester
 from backtest.metrics import calculate_metrics
 from data.fetcher import fetch_ohlcv
 from signals.fvg import FVG, detect_fvgs
 from signals.liquidity import LiquiditySweep, detect_sweeps
 from signals.order_blocks import OrderBlock, detect_order_blocks
 
-app = dash.Dash(__name__, title="ICT Backtester")
+app = dash.Dash(
+    __name__,
+    title="ICT Backtester",
+    external_scripts=[
+        "https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+    ],
+)
 
 app.layout = html.Div(
     style={"fontFamily": "Arial, sans-serif", "backgroundColor": "#1a1a2e", "color": "white"},
@@ -52,11 +57,23 @@ app.layout = html.Div(
                     "Run Backtest",
                     id="run-btn",
                     n_clicks=0,
-                    style={"padding": "8px 20px", "cursor": "pointer", "backgroundColor": "#7986cb", "border": "none", "color": "white", "borderRadius": "4px"},
+                    style={
+                        "padding": "8px 20px",
+                        "cursor": "pointer",
+                        "backgroundColor": "#7986cb",
+                        "border": "none",
+                        "color": "white",
+                        "borderRadius": "4px",
+                    },
                 ),
             ],
         ),
-        dcc.Graph(id="main-chart", style={"height": "580px"}),
+        html.Div(
+            id="tv-chart",
+            style={"height": "580px", "width": "100%", "backgroundColor": "#1a1a2e"},
+        ),
+        dcc.Store(id="chart-data"),
+        dcc.Store(id="chart-rendered"),
         dcc.Graph(id="equity-chart", style={"height": "280px"}),
         html.Div(id="metrics-panel", style={"padding": "20px"}),
     ],
@@ -64,15 +81,15 @@ app.layout = html.Div(
 
 
 @app.callback(
-    Output("main-chart", "figure"),
+    Output("chart-data", "data"),
     Output("equity-chart", "figure"),
     Output("metrics-panel", "children"),
     Input("run-btn", "n_clicks"),
     Input("symbol-dd", "value"),
     Input("timeframe-dd", "value"),
 )
-def update(n_clicks: int, symbol: str, timeframe: str):
-    """Fetch data, detect signals, run backtest, and render all charts."""
+def update_data(n_clicks: int, symbol: str, timeframe: str) -> tuple:
+    """Compute signals and backtest; serialize chart data for the clientside renderer."""
     df = fetch_ohlcv(symbol, timeframe)
     fvgs = detect_fvgs(df)
     obs = detect_order_blocks(df)
@@ -83,125 +100,108 @@ def update(n_clicks: int, symbol: str, timeframe: str):
     metrics = calculate_metrics(trades, backtester.equity_curve)
 
     return (
-        _main_chart(df, fvgs, obs, sweeps, trades, timeframe),
+        _serialize_chart_data(df, fvgs, obs, sweeps),
         _equity_chart(backtester.equity_curve),
         _metrics_panel(metrics),
     )
 
 
+app.clientside_callback(
+    ClientsideFunction(namespace="clientside", function_name="renderChart"),
+    Output("chart-rendered", "data"),
+    Input("chart-data", "data"),
+)
+
+
 # ------------------------------------------------------------------
-# Chart builders
+# Serialization helpers
 # ------------------------------------------------------------------
 
 
-def _x_ticks(df: pd.DataFrame, timeframe: str) -> tuple:
-    """Return (tickvals, ticktext) sampling candles at a timeframe-appropriate interval."""
-    step = {"1h": 8, "4h": 2, "1d": 5}.get(timeframe, 8)
-    indices = range(0, len(df), step)
-    fmt = "%b %d" if timeframe == "1d" else "%b %d %H:%M"
-    tickvals = [df.index[i] for i in indices]
-    ticktext = [df.index[i].strftime(fmt) for i in indices]
-    return tickvals, ticktext
+def _to_unix(ts: pd.Timestamp) -> int:
+    """Convert a UTC-naive pandas Timestamp to a UTC Unix timestamp (seconds)."""
+    return calendar.timegm(ts.timetuple())
 
 
-def _main_chart(
+def _serialize_chart_data(
     df: pd.DataFrame,
     fvgs: List[FVG],
     obs: List[OrderBlock],
     sweeps: List[LiquiditySweep],
-    trades: List[Trade],
-    timeframe: str = "1h",
-) -> go.Figure:
-    """Candlestick + volume chart with FVG/OB overlays and liquidity sweep lines."""
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        row_heights=[0.75, 0.25], vertical_spacing=0.02,
-    )
+) -> dict:
+    """Produce a JSON-serialisable dict consumed by the clientside chart renderer."""
+    candles = [
+        {
+            "time": _to_unix(ts),
+            "open": round(float(row["open"]), 6),
+            "high": round(float(row["high"]), 6),
+            "low": round(float(row["low"]), 6),
+            "close": round(float(row["close"]), 6),
+        }
+        for ts, row in df.iterrows()
+    ]
 
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-            name="Price",
-            increasing_line_color="#26a69a",
-            decreasing_line_color="#ef5350",
-        ),
-        row=1, col=1,
-    )
+    volume = [
+        {
+            "time": _to_unix(ts),
+            "value": float(row["volume"]),
+            "color": "#26a69a" if row["close"] >= row["open"] else "#ef5350",
+        }
+        for ts, row in df.iterrows()
+    ]
 
-    fig.add_trace(
-        go.Bar(
-            x=df.index, y=df["volume"],
-            marker_color="#7986cb", opacity=0.5, name="Volume",
-        ),
-        row=2, col=1,
-    )
+    last_time = _to_unix(df.index[-1])
 
-    # Unmitigated FVG rectangles only — extend to right edge
-    for fvg in fvgs:
-        if fvg.filled or fvg.index >= len(df):
-            continue
-        bull = fvg.direction == "bullish"
-        fig.add_shape(
-            type="rect",
-            x0=df.index[fvg.index],
-            x1=df.index[-1],
-            y0=fvg.bottom,
-            y1=fvg.top,
-            fillcolor="rgba(38,166,154,0.18)" if bull else "rgba(239,83,80,0.18)",
-            line=dict(color="#26a69a" if bull else "#ef5350", width=1),
-            row=1, col=1,
-        )
+    fvg_boxes = [
+        {
+            "left": _to_unix(df.index[fvg.index]),
+            "right": last_time,
+            "top": round(float(fvg.top), 6),
+            "bottom": round(float(fvg.bottom), 6),
+            "fillColor": "rgba(38,166,154,0.18)" if fvg.direction == "bullish" else "rgba(239,83,80,0.18)",
+            "borderColor": "#26a69a" if fvg.direction == "bullish" else "#ef5350",
+            "extendRight": True,
+            "dashed": False,
+        }
+        for fvg in fvgs
+        if not fvg.filled and fvg.index < len(df)
+    ]
 
-    # Unmitigated OB rectangles only — extend to right edge
-    for ob in obs:
-        if ob.mitigated or ob.index >= len(df):
-            continue
-        bull = ob.direction == "bullish"
-        fig.add_shape(
-            type="rect",
-            x0=df.index[ob.index],
-            x1=df.index[-1],
-            y0=ob.bottom,
-            y1=ob.top,
-            fillcolor="rgba(255,214,0,0.10)" if bull else "rgba(255,87,34,0.10)",
-            line=dict(color="#FFD600" if bull else "#FF5722", width=1, dash="dot"),
-            row=1, col=1,
-        )
+    ob_boxes = [
+        {
+            "left": _to_unix(df.index[ob.index]),
+            "right": last_time,
+            "top": round(float(ob.top), 6),
+            "bottom": round(float(ob.bottom), 6),
+            "fillColor": "rgba(255,214,0,0.10)" if ob.direction == "bullish" else "rgba(255,87,34,0.10)",
+            "borderColor": "#FFD600" if ob.direction == "bullish" else "#FF5722",
+            "extendRight": True,
+            "dashed": True,
+        }
+        for ob in obs
+        if not ob.mitigated and ob.index < len(df)
+    ]
 
-    # Liquidity sweep lines — short horizontal line at the swept level
-    for sweep in sweeps:
-        if sweep.index >= len(df):
-            continue
-        i0 = max(0, sweep.index - 2)
-        i1 = min(len(df) - 1, sweep.index + 6)
-        color = "#FF6B6B" if sweep.direction == "high" else "#4FC3F7"
-        fig.add_shape(
-            type="line",
-            x0=df.index[i0],
-            x1=df.index[i1],
-            y0=sweep.sweep_level,
-            y1=sweep.sweep_level,
-            line=dict(color=color, width=1, dash="dash"),
-            row=1, col=1,
-        )
+    sweep_lines = [
+        {
+            "price": round(float(s.sweep_level), 6),
+            "direction": s.direction,
+        }
+        for s in sweeps
+    ]
 
-    tickvals, ticktext = _x_ticks(df, timeframe)
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#1a1a2e",
-        plot_bgcolor="#1a1a2e",
-        xaxis_rangeslider_visible=False,
-        showlegend=False,
-        margin=dict(l=50, r=20, t=20, b=10),
-        xaxis=dict(
-            type="category",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            tickangle=-45,
-        ),
-    )
-    return fig
+    return {
+        "candles": candles,
+        "volume": volume,
+        "fvgs": fvg_boxes,
+        "obs": ob_boxes,
+        "sweeps": sweep_lines,
+    }
+
+
+# ------------------------------------------------------------------
+# Equity chart + metrics panel (still Plotly)
+# ------------------------------------------------------------------
 
 
 def _equity_chart(equity_curve: List[float]) -> go.Figure:
@@ -229,14 +229,16 @@ def _equity_chart(equity_curve: List[float]) -> go.Figure:
 
 
 def _metrics_panel(metrics: dict) -> html.Div:
-    """Render metrics as a two-column grid."""
+    """Render metrics as a responsive grid of cards."""
     if "error" in metrics:
         return html.P(metrics["error"], style={"color": "#ef5350"})
-
     cells = [
         html.Div(
             [
-                html.Span(k.replace("_", " ").title(), style={"color": "#aaa", "fontSize": "12px"}),
+                html.Span(
+                    k.replace("_", " ").title(),
+                    style={"color": "#aaa", "fontSize": "12px"},
+                ),
                 html.Div(str(v), style={"fontSize": "18px", "fontWeight": "bold"}),
             ],
             style={"padding": "10px 20px", "backgroundColor": "#16213e", "borderRadius": "6px"},
@@ -245,7 +247,11 @@ def _metrics_panel(metrics: dict) -> html.Div:
     ]
     return html.Div(
         cells,
-        style={"display": "grid", "gridTemplateColumns": "repeat(auto-fill, minmax(180px, 1fr))", "gap": "12px"},
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(180px, 1fr))",
+            "gap": "12px",
+        },
     )
 
 

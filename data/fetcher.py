@@ -14,7 +14,7 @@ def fetch_ohlcv(
     df = ticker.history(period=period, interval=timeframe)
     df.index = pd.to_datetime(df.index)
     if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+        df.index = df.index.tz_convert("UTC").tz_localize(None)
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     df.columns = ["open", "high", "low", "close", "volume"]
     df.dropna(inplace=True)
