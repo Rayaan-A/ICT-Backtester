@@ -11,23 +11,28 @@ def calculate_metrics(
     equity_curve: List[float],
 ) -> Dict[str, Union[int, float, str]]:
     """Compute summary statistics for a completed backtest."""
-    closed = [t for t in trades if t.result in ("win", "loss")]
+    closed = [t for t in trades if t.result in ("win", "loss", "breakeven")]
 
     if not closed:
         return {"error": "No closed trades to evaluate"}
 
-    wins = [t for t in closed if t.result == "win"]
+    wins       = [t for t in closed if t.result == "win"]
+    losses     = [t for t in closed if t.result == "loss"]
+    breakevens = [t for t in closed if t.result == "breakeven"]
+    # Win rate excludes breakevens (they're neither wins nor losses)
+    decisive   = wins + losses
     equity = np.array(equity_curve, dtype=float)
 
     return {
-        "total_trades": len(closed),
-        "wins": len(wins),
-        "losses": len(closed) - len(wins),
-        "win_rate": round(len(wins) / len(closed), 4),
-        "profit_factor": round(_profit_factor(closed), 4),
-        "sharpe_ratio": round(_sharpe(equity), 4),
+        "total_trades":     len(closed),
+        "wins":             len(wins),
+        "losses":           len(losses),
+        "breakevens":       len(breakevens),
+        "win_rate":         round(len(wins) / len(decisive), 4) if decisive else 0.0,
+        "profit_factor":    round(_profit_factor(closed), 4),
+        "sharpe_ratio":     round(_sharpe(equity), 4),
         "max_drawdown_pct": round(_max_drawdown(equity) * 100, 2),
-        "final_equity": round(float(equity[-1]), 2),
+        "final_equity":     round(float(equity[-1]), 2),
         "total_return_pct": round((float(equity[-1]) / equity[0] - 1) * 100, 2),
     }
 
