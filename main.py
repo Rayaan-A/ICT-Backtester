@@ -1,53 +1,51 @@
 import sys
 
 import config
-from backtest.engine import Backtester
+from backtest.engine import PBBlakeBacktester
 from backtest.metrics import calculate_metrics
 from data.database import load_ohlcv, save_ohlcv
-from data.fetcher import fetch_ohlcv
-from signals.fvg import detect_fvgs
-from signals.liquidity import detect_sweeps
-from signals.order_blocks import detect_order_blocks
+from data.fetcher import fetch_ohlcv, resample_ohlcv
 
 
-def run_backtest(
-    symbol: str = config.DEFAULT_SYMBOL,
-    timeframe: str = config.DEFAULT_TIMEFRAME,
-) -> None:
-    """Run the full ICT backtest pipeline and print a summary."""
-    print(f"\n{'=' * 52}")
-    print(f"  {symbol}  {timeframe}")
-    print(f"{'=' * 52}")
+def run_backtest(symbol: str = config.DEFAULT_SYMBOL) -> None:
+    """Fetch multi-TF data, run the PB Blake backtest, and print a summary."""
+    print(f"\n{'=' * 60}")
+    print(f"  PB Blake Mech Model  ·  {symbol}  ·  base {config.BASE_TIMEFRAME}")
+    print(f"{'=' * 60}")
 
-    df = load_ohlcv(symbol, timeframe)
-    if df is None:
-        print("Fetching from yfinance...")
-        df = fetch_ohlcv(symbol, timeframe)
-        save_ohlcv(df, symbol, timeframe)
-        print(f"  {len(df)} candles fetched and cached.")
+    # ── Fetch / load base TF (5m) ─────────────────────────────────────────
+    df_base = load_ohlcv(symbol, config.BASE_TIMEFRAME)
+    if df_base is None:
+        print("Fetching from yfinance …")
+        df_base = fetch_ohlcv(symbol, config.BASE_TIMEFRAME, config.BASE_PERIOD)
+        save_ohlcv(df_base, symbol, config.BASE_TIMEFRAME)
+        print(f"  {len(df_base)} × {config.BASE_TIMEFRAME} candles fetched and cached.")
     else:
-        print(f"  {len(df)} candles loaded from database.")
+        print(f"  {len(df_base)} × {config.BASE_TIMEFRAME} candles loaded from database.")
 
-    fvgs = detect_fvgs(df)
-    obs = detect_order_blocks(df)
-    sweeps = detect_sweeps(df)
+    # ── Build multi-TF dict by resampling ────────────────────────────────
+    dfs = {config.BASE_TIMEFRAME: df_base}
+    all_tfs = set(config.SETUP_TIMEFRAMES) | set(config.HTF_BIAS_TIMEFRAMES)
+    for tf in all_tfs:
+        if tf == config.BASE_TIMEFRAME:
+            continue
+        dfs[tf] = resample_ohlcv(df_base, tf)
+        print(f"  {len(dfs[tf])} × {tf} candles (resampled)")
 
-    bull_fvg = sum(1 for f in fvgs if f.direction == "bullish")
-    bear_fvg = len(fvgs) - bull_fvg
-    bull_ob = sum(1 for o in obs if o.direction == "bullish")
-    bear_ob = len(obs) - bull_ob
-    sweep_low = sum(1 for s in sweeps if s.direction == "low")
-    sweep_high = len(sweeps) - sweep_low
+    # ── Run backtest ──────────────────────────────────────────────────────
+    print("\nRunning backtest …")
+    backtester = PBBlakeBacktester(dfs)
+    trades     = backtester.run()
+    metrics    = calculate_metrics(trades, backtester.equity_curve)
 
-    print(f"\nSignals")
-    print(f"  FVGs          {bull_fvg} bullish  {bear_fvg} bearish")
-    print(f"  Order Blocks  {bull_ob} bullish  {bear_ob} bearish")
-    print(f"  Liq Sweeps    {sweep_low} low  {sweep_high} high")
+    # ── Trade-type breakdown ──────────────────────────────────────────────
+    cont = [t for t in trades if t.setup_type == "continuation"]
+    rev  = [t for t in trades if t.setup_type == "reversal"]
+    print(f"\nTrade breakdown")
+    print(f"  Continuation  {len(cont)}")
+    print(f"  Reversal      {len(rev)}")
 
-    backtester = Backtester(df)
-    trades = backtester.run()
-    metrics = calculate_metrics(trades, backtester.equity_curve)
-
+    # ── Metrics ───────────────────────────────────────────────────────────
     print(f"\nResults")
     for key, value in metrics.items():
         label = key.replace("_", " ").title()
@@ -56,5 +54,4 @@ def run_backtest(
 
 if __name__ == "__main__":
     symbol = sys.argv[1] if len(sys.argv) > 1 else config.DEFAULT_SYMBOL
-    timeframe = sys.argv[2] if len(sys.argv) > 2 else config.DEFAULT_TIMEFRAME
-    run_backtest(symbol, timeframe)
+    run_backtest(symbol)

@@ -7,3 +7,4 @@ venv/
 data/market_data.db
 *.db
 .DS_Store
+.claude/
